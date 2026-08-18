@@ -1234,7 +1234,18 @@ class CheckIn:
 
             # 生成缓存文件路径
             username_hash = hashlib.sha256(username.encode("utf-8")).hexdigest()[:8]
-            cache_file_path = f"{self.storage_state_dir}/github_{username_hash}_storage_state.json"
+            if self.provider_config.login_award:
+                # 登录即送模式：使用独立缓存路径并强制删除，
+                # 每次运行都走完整 OAuth 登录流程以触发登录奖励
+                provider_tag = self.provider_config.name.replace("/", "_").replace(".", "_").replace("-", "_")
+                cache_file_path = f"{self.storage_state_dir}/github_{username_hash}_{provider_tag}_storage_state.json"
+                if os.path.exists(cache_file_path):
+                    os.remove(cache_file_path)
+                    print(
+                        f"ℹ️ {self.account_name}: login_award mode, removed cached storage state for fresh login"
+                    )
+            else:
+                cache_file_path = f"{self.storage_state_dir}/github_{username_hash}_storage_state.json"
 
             from sign_in_with_github import GitHubSignIn
 

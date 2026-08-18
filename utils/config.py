@@ -58,6 +58,7 @@ class ProviderConfig:
     bypass_method: Literal["waf_cookies", "cf_clearance"] | None = None
     auto_add: bool = False
     isCustomize: bool = False  # 是否为自定义 provider（从环境变量加载）
+    login_award: bool = False  # 登录即送模式：每次强制重新登录获取额度，跳过签到接口
 
     @classmethod
     def from_dict(cls, name: str, data: dict, is_customize: bool = False) -> "ProviderConfig":
@@ -95,6 +96,7 @@ class ProviderConfig:
             bypass_method=data.get("bypass_method"),
             auto_add=data.get("auto_add", False),
             isCustomize=is_customize,
+            login_award=data.get("login_award", False),
         )
 
     def needs_waf_cookies(self) -> bool:
