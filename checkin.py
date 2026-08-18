@@ -511,11 +511,32 @@ class CheckIn:
             headers: 请求头
         """
         try:
-            response = session.get(
-                self.provider_config.get_auth_state_url(),
-                headers=headers,
-                timeout=30,
-            )
+            # v2 新版 New-API:POST state 接口获取 flow_token
+            if getattr(self.provider_config, "auth_state_v2", False):
+                print(f"ℹ️ {self.account_name}: Using v2 OAuth state protocol (POST)")
+                state_resp = session.post(
+                    self.provider_config.get_auth_state_url(),
+                    json={"provider": "github", "intent": "login"},
+                    headers=headers,
+                    timeout=30,
+                )
+                if state_resp.status_code == 429:
+                    print(f"⚠️ {self.account_name}: v2 auth state rate limited (429), retrying with backoff")
+                    import time as _time
+                    _time.sleep(20)
+                    state_resp = session.post(
+                        self.provider_config.get_auth_state_url(),
+                        json={"provider": "github", "intent": "login"},
+                        headers=headers,
+                        timeout=30,
+                    )
+                response = state_resp
+            else:
+                response = session.get(
+                    self.provider_config.get_auth_state_url(),
+                    headers=headers,
+                    timeout=30,
+                )
 
             if response.status_code == 200:
                 json_data = response_resolve(response, "get_auth_state", self.account_name)
@@ -528,6 +549,11 @@ class CheckIn:
                 # 检查响应是否成功
                 if json_data.get("success"):
                     auth_data = json_data.get("data")
+                    # v2 响应结构: data.flow_token
+                    if getattr(self.provider_config, "auth_state_v2", False):
+                        if isinstance(auth_data, dict) and auth_data.get("flow_token"):
+                            auth_data = auth_data["flow_token"]
+                            print(f"ℹ️ {self.account_name}: v2 flow_token obtained")
 
                     # 将 curl_cffi Cookies 转换为 Camoufox 格式
                     result_cookies = []

@@ -41,6 +41,7 @@ class ProviderConfig:
     login_path: str = "/login"
     status_path: str = "/api/status"
     auth_state_path: str = "api/oauth/state"
+    auth_state_v2: bool = False  # 新版 New-API:v2 OAuth flow, POST state 接口返回 flow_token
     check_in_path: str | Callable[[str, str | int], str] | None = None
     check_in_status: bool | CheckInStatusFunc = False  # 签到状态查询：True=标准检查，False=不检查，Callable=自定义函数
     user_info_path: str = "/api/user/self"
@@ -77,6 +78,7 @@ class ProviderConfig:
             login_path=data.get("login_path", "/login"),
             status_path=data.get("status_path", "/api/status"),
             auth_state_path=data.get("auth_state_path", "api/oauth/state"),
+            auth_state_v2=data.get("auth_state_v2", False),
             check_in_path=data.get("check_in_path"),
             check_in_status=data.get("check_in_status", False),
             user_info_path=data.get("user_info_path", "/api/user/self"),

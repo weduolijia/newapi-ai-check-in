@@ -242,9 +242,50 @@ class GitHubSignIn:
                                             # URL未改变也继续，可能已经在正确页面
                                             pass
                                     else:
-                                        # 回退到手动输入
-                                        print(f"ℹ️ {self.account_name}: Please enter OTP manually in the browser")
-                                        await page.wait_for_timeout(30000)  # 等待30秒让用户手动输入
+                                        # 没有 otp 输入框:可能是 GitHub Mobile 推送 2FA(mobile_poll 表单)
+                                        # 或安全密钥验证
+                                        mobile_form = await page.query_selector(
+                                            'form[action*="mobile_poll"], form[id*="mobile"], '
+                                            'input[name="app_otp"], input[name="device_response"]'
+                                        )
+                                        webauthn = await page.query_selector('input[data-webauthn]')
+                                        if mobile_form or webauthn:
+                                            print(
+                                                f"🔔 {self.account_name}: GitHub Mobile / WebAuthn 2FA detected. "
+                                                "请在手机上打开 GitHub App 并批准登录, 或点击浏览器中的安全密钥"
+                                            )
+                                            await save_page_content_to_file(
+                                                page, "mobile_2fa_waiting", self.account_name, prefix="github"
+                                            )
+                                            # 轮询等待,最长 180 秒,直到 URL 离开 two-factor 或出现授权页
+                                            import asyncio
+                                            for _i in range(36):
+                                                await page.wait_for_timeout(5000)
+                                                cur = page.url
+                                                if "two-factor" not in cur and "login" not in cur:
+                                                    print(
+                                                        f"✅ {self.account_name}: Mobile 2FA confirmed, "
+                                                        f"now at {cur}"
+                                                    )
+                                                    break
+                                                # 也可能页面无感轮询成功后自动跳转
+                                                try:
+                                                    btn = await page.query_selector('button[type="submit"]')
+                                                    if btn and "two-factor" not in cur:
+                                                        print(
+                                                            f"✅ {self.account_name}: 2FA page resolved automatically"
+                                                        )
+                                                        break
+                                                except Exception:
+                                                    pass
+                                            else:
+                                                print(
+                                                    f"⚠️ {self.account_name}: Mobile 2FA wait timed out after 180s"
+                                                )
+                                        else:
+                                            # 回退到手动输入
+                                            print(f"ℹ️ {self.account_name}: Please enter OTP manually in the browser")
+                                            await page.wait_for_timeout(30000)  # 等待30秒让用户手动输入
                             except Exception as e:
                                 print(f"⚠️ {self.account_name}: Error handling 2FA: {e}")
 
