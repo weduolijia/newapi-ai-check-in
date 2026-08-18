@@ -393,6 +393,7 @@ class GitHubSignIn:
 
                     # 从 localStorage 获取 user 对象并提取 id
                     api_user = None
+                    access_token = None
                     current_url = page.url
                     try:
                         try:
@@ -441,7 +442,6 @@ class GitHubSignIn:
                                 base_headers[self.provider_config.api_user_key] = "-1"
 
                             # 1) 优先 POST /api/user/auth/refresh 获取 auth bundle（含 user.id 和 access_token）
-                            access_token = None
                             try:
                                 resp = curl_session.post(
                                     f"{origin}/api/user/auth/refresh",
