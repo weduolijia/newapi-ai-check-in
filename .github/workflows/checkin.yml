@@ -1,7 +1,7 @@
 name: newapi.ai 自动签到
 on:
   schedule:
-    - cron: '0 */8 * * *'
+    - cron: '0 23 * * *'  # 北京时间每天早上 7:00 (UTC 23:00)
   workflow_dispatch:
     inputs:
       accounts:
