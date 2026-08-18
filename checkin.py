@@ -1575,7 +1575,11 @@ class CheckIn:
                 return False, {"error": error_msg}
 
             user_data = json_data.get("data", {})
+            # New-API rc.23+: user 信息在 data.user.id; 老版在 data.id
             api_user = user_data.get("id")
+            user_obj = user_data.get("user") or {}
+            if api_user is None:
+                api_user = user_obj.get("id")
             if api_user is None:
                 print(f"❌ {self.account_name}: No user ID in site login response")
                 return False, {"error": "No user ID in site login response"}
