@@ -1580,6 +1580,18 @@ class CheckIn:
                 print(f"❌ {self.account_name}: No user ID in site login response")
                 return False, {"error": "No user ID in site login response"}
 
+            # New-API rc.23+ (如 beizhi.sylu.cc): login 响应直接带 access_token，
+            # 用 system access token 路径执行签到（Authorization: Bearer）
+            access_token = user_data.get("access_token")
+            if access_token:
+                print(f"ℹ️ {self.account_name}: Using access token from site login for check-in")
+                return await self.check_in_with_system_access_token(
+                    access_token=access_token,
+                    bypass_cookies=bypass_cookies,
+                    common_headers=common_headers,
+                    api_user=api_user,
+                )
+
             user_cookies = {}
             for cookie in session.cookies.jar:
                 user_cookies[cookie.name] = cookie.value
