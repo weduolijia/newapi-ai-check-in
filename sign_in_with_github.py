@@ -13,6 +13,7 @@ from utils.config import ProviderConfig
 from utils.wait_for_secrets import WaitForSecrets
 from utils.get_headers import get_browser_headers, print_browser_headers
 from utils.storage_state import ensure_storage_state_from_env
+from utils.notify import notify
 
 STORAGE_STATE_ENV_NAME = "STORATE_STATES_GITHUB"
 
@@ -254,10 +255,33 @@ class GitHubSignIn:
                                     )
                                     webauthn = await page.query_selector('input[data-webauthn]')
                                     if mobile_form or webauthn:
-                                        print(
-                                            f"🔔 {self.account_name}: GitHub Mobile / WebAuthn 2FA detected. "
-                                            "请在手机上打开 GitHub App 并批准登录, 或点击浏览器中的安全密钥"
-                                        )
+                                        # 提取号码匹配(mobile_poll)页面上显示的数字,用户需在手机 GitHub App 输入
+                                        match_digits = ""
+                                        try:
+                                            digits_el = await page.query_selector('h2.mobile-authentication-digits, .mobile-authentication-digits')
+                                            if digits_el:
+                                                match_digits = (await digits_el.inner_text()).strip()
+                                        except Exception:
+                                            pass
+                                        if match_digits:
+                                            print(
+                                                f"🔢 {self.account_name}: GitHub Mobile number-matching 2FA. "
+                                                f"请在手机 GitHub App 输入配对数字: 【{match_digits}】"
+                                            )
+                                            try:
+                                                notify.push_message(
+                                                    f"GitHub 登录配对数字 - {self.account_name}",
+                                                    f"请在手机 GitHub App 的登录请求中输入以下配对数字:\n\n【{match_digits}】\n\n输入后点击批准。",
+                                                    msg_type="text",
+                                                )
+                                                print(f"✅ {self.account_name}: 配对数字已通过通知发送")
+                                            except Exception as _ne:
+                                                print(f"⚠️ {self.account_name}: 发送配对数字通知失败: {_ne}")
+                                        else:
+                                            print(
+                                                f"🔔 {self.account_name}: GitHub Mobile / WebAuthn 2FA detected. "
+                                                "请在手机上打开 GitHub App 并批准登录, 或点击浏览器中的安全密钥"
+                                            )
                                         await save_page_content_to_file(
                                             page, "mobile_2fa_waiting", self.account_name, prefix="github"
                                         )
