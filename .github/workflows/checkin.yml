@@ -106,6 +106,7 @@ jobs:
     - name: 执行签到
       env:
         ACCOUNTS: ${{ inputs.accounts || secrets.ACCOUNTS }}
+        ACCOUNTS_EXTRA: ${{ secrets.ACCOUNTS_EXTRA }}
         ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
         ACCOUNTS_GITHUB: ${{ secrets.ACCOUNTS_GITHUB }}
         PROVIDERS: ${{ inputs.providers || secrets.PROVIDERS }}
@@ -125,6 +126,14 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
+        # 合并 ACCOUNTS 与 ACCOUNTS_EXTRA (扩展账号, 不覆盖原 secret)
+        if ($env:ACCOUNTS_EXTRA -and $env:ACCOUNTS) {
+          $accounts = $env:ACCOUNTS | ConvertFrom-Json
+          $extra = $env:ACCOUNTS_EXTRA | ConvertFrom-Json
+          $merged = @($accounts) + @($extra)
+          $env:ACCOUNTS = $merged | ConvertTo-Json -Depth 10 -Compress
+          Write-Host "🔀 Merged $($accounts.Count) + $($extra.Count) accounts"
+        }
         # 列出 storage-states 目录文件
         if (Test-Path "storage-states") {
           echo "📁 storage-states 目录内容:"
