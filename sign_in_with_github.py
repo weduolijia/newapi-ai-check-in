@@ -8,10 +8,11 @@ import os
 from urllib.parse import urlparse, parse_qs
 from camoufox.async_api import AsyncCamoufox
 from playwright_captcha import CaptchaType, ClickSolver, FrameworkType
+from curl_cffi import requests as curl_requests
 from utils.browser_utils import filter_cookies, take_screenshot, save_page_content_to_file
 from utils.config import ProviderConfig
 from utils.wait_for_secrets import WaitForSecrets
-from utils.get_headers import get_browser_headers, print_browser_headers
+from utils.get_headers import get_browser_headers, print_browser_headers, get_curl_cffi_impersonate
 from utils.storage_state import ensure_storage_state_from_env
 from utils.notify import notify
 
@@ -412,35 +413,75 @@ class GitHubSignIn:
                     except Exception as e:
                         print(f"⚠️ {self.account_name}: Error reading user from localStorage: {e}")
 
-                    # 若 localStorage 无 user（New-API rc.23+ 使用 session cookie 而非 localStorage），
-                    # 降级通过浏览器的请求上下文（复用登录 cookies）请求 /api/user/self 获取用户 ID
+                    # 若 localStorage 无 user（New-API rc.23+ 不用 localStorage 存 user），
+                    # 降级通过 curl_requests + 登录 cookies 获取用户 ID。
+                    # rc.23 认证依赖 /api/user/auth/refresh 返回的 auth bundle（含 user.id），
+                    # 直接 GET /api/user/self 不带 Bearer token 会 403。
                     if not api_user:
+                        curl_session = None
                         try:
-                            user_info_url = self.provider_config.get_user_info_url()
-                            if user_info_url:
-                                resp = await context.request.get(
-                                    user_info_url,
-                                    headers={"Referer": self.provider_config.origin},
+                            origin = self.provider_config.origin
+                            # 提取当前浏览器登录后的 cookies（只保留 provider 域）
+                            all_cookies = await context.cookies()
+                            session_cookies = filter_cookies(all_cookies, origin)
+                            # 用浏览器指纹作为 User-Agent 等请求头
+                            try:
+                                b_headers = await get_browser_headers(page) or {}
+                            except Exception:
+                                b_headers = {}
+                            user_agent = b_headers.get("User-Agent", "")
+                            impersonate = get_curl_cffi_impersonate(user_agent) if user_agent else "chrome136"
+                            curl_session = curl_requests.Session(impersonate=impersonate, timeout=30)
+                            curl_session.cookies.update(session_cookies)
+
+                            base_headers = dict(b_headers)
+                            base_headers["Referer"] = origin
+                            base_headers["Origin"] = origin
+                            if getattr(self.provider_config, "api_user_key", None):
+                                base_headers[self.provider_config.api_user_key] = "-1"
+
+                            # 1) 优先 POST /api/user/auth/refresh 获取 auth bundle（含 user.id）
+                            try:
+                                resp = curl_session.post(
+                                    f"{origin}/api/user/auth/refresh",
+                                    headers=base_headers,
+                                    timeout=30,
                                 )
-                                if resp.status == 200:
-                                    try:
-                                        body = await resp.json()
-                                    except Exception:
-                                        body = None
-                                    # 兼容 {success,data:{id}} 和新式 data.self 等结构
-                                    data_obj = body.get("data", {}) if body else {}
+                                if resp.status_code == 200:
+                                    jb = resp.json()
+                                    data_obj = jb.get("data", {}) if isinstance(jb, dict) else {}
                                     if isinstance(data_obj, dict):
-                                        api_user = data_obj.get("id")
-                                    if api_user:
-                                        print(f"✅ {self.account_name}: Got api user from user-info API (browser context): {api_user}")
+                                        user_obj = data_obj.get("user", {})
+                                        if isinstance(user_obj, dict) and user_obj.get("id"):
+                                            api_user = user_obj.get("id")
+                                            print(f"✅ {self.account_name}: Got api user from auth refresh: {api_user}")
+                            except Exception as e:
+                                print(f"⚠️ {self.account_name}: auth refresh error: {e}")
+
+                            # 2) 若 refresh 未拿到 user，回退 GET /api/user/self（带 api_user_key）
+                            if not api_user:
+                                user_info_url = self.provider_config.get_user_info_url()
+                                if user_info_url:
+                                    resp = curl_session.get(user_info_url, headers=base_headers, timeout=30)
+                                    if resp.status_code == 200:
+                                        try:
+                                            body = resp.json()
+                                        except Exception:
+                                            body = None
+                                        data_obj = body.get("data", {}) if body else {}
+                                        if isinstance(data_obj, dict):
+                                            api_user = data_obj.get("id")
+                                        if api_user:
+                                            print(f"✅ {self.account_name}: Got api user from user-info API: {api_user}")
+                                        else:
+                                            print(f"⚠️ {self.account_name}: No user API user id in response")
                                     else:
-                                        print(f"⚠️ {self.account_name}: No user API user id in browser response")
-                                else:
-                                    print(f"⚠️ {self.account_name}: User-info API (browser context) HTTP {resp.status}")
-                            else:
-                                print(f"⚠️ {self.account_name}: No user-info URL configured, skip API fallback")
+                                        print(f"⚠️ {self.account_name}: User-info API HTTP {resp.status_code}")
                         except Exception as e:
-                            print(f"⚠️ {self.account_name}: Error getting user via browser-context API: {e}")
+                            print(f"⚠️ {self.account_name}: Error getting user via auth API: {e}")
+                        finally:
+                            if curl_session:
+                                curl_session.close()
 
                     if api_user:
                         print(f"✅ {self.account_name}: OAuth authorization successful")
