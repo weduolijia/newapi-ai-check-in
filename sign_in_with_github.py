@@ -412,6 +412,36 @@ class GitHubSignIn:
                     except Exception as e:
                         print(f"⚠️ {self.account_name}: Error reading user from localStorage: {e}")
 
+                    # 若 localStorage 无 user（New-API rc.23+ 使用 session cookie 而非 localStorage），
+                    # 降级通过浏览器的请求上下文（复用登录 cookies）请求 /api/user/self 获取用户 ID
+                    if not api_user:
+                        try:
+                            user_info_url = self.provider_config.get_user_info_url()
+                            if user_info_url:
+                                resp = await context.request.get(
+                                    user_info_url,
+                                    headers={"Referer": self.provider_config.origin},
+                                )
+                                if resp.status == 200:
+                                    try:
+                                        body = await resp.json()
+                                    except Exception:
+                                        body = None
+                                    # 兼容 {success,data:{id}} 和新式 data.self 等结构
+                                    data_obj = body.get("data", {}) if body else {}
+                                    if isinstance(data_obj, dict):
+                                        api_user = data_obj.get("id")
+                                    if api_user:
+                                        print(f"✅ {self.account_name}: Got api user from user-info API (browser context): {api_user}")
+                                    else:
+                                        print(f"⚠️ {self.account_name}: No user API user id in browser response")
+                                else:
+                                    print(f"⚠️ {self.account_name}: User-info API (browser context) HTTP {resp.status}")
+                            else:
+                                print(f"⚠️ {self.account_name}: No user-info URL configured, skip API fallback")
+                        except Exception as e:
+                            print(f"⚠️ {self.account_name}: Error getting user via browser-context API: {e}")
+
                     if api_user:
                         print(f"✅ {self.account_name}: OAuth authorization successful")
 
