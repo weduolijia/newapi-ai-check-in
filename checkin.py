@@ -1221,10 +1221,15 @@ class CheckIn:
                     return False, {"error": "Failed to get GitHub client ID"}
 
             # 获取 OAuth 认证状态
-            auth_state_result = await self.get_auth_state(
-                session=session,
-                headers=headers,
-            )
+            if self.provider_config.auth_state_browser:
+                # 使用 Camoufox 浏览器获取 state (绕过 WAF 对 curl_cffi 的拦截)
+                print(f"ℹ️ {self.account_name}: Using browser to get auth state")
+                auth_state_result = await self.get_auth_state_with_browser()
+            else:
+                auth_state_result = await self.get_auth_state(
+                    session=session,
+                    headers=headers,
+                )
             if auth_state_result and auth_state_result.get("success"):
                 print(f"ℹ️ {self.account_name}: Got auth state for GitHub: {auth_state_result['state']}")
             else:
