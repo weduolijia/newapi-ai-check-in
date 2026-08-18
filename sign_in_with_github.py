@@ -440,7 +440,8 @@ class GitHubSignIn:
                             if getattr(self.provider_config, "api_user_key", None):
                                 base_headers[self.provider_config.api_user_key] = "-1"
 
-                            # 1) 优先 POST /api/user/auth/refresh 获取 auth bundle（含 user.id）
+                            # 1) 优先 POST /api/user/auth/refresh 获取 auth bundle（含 user.id 和 access_token）
+                            access_token = None
                             try:
                                 resp = curl_session.post(
                                     f"{origin}/api/user/auth/refresh",
@@ -455,6 +456,10 @@ class GitHubSignIn:
                                         if isinstance(user_obj, dict) and user_obj.get("id"):
                                             api_user = user_obj.get("id")
                                             print(f"✅ {self.account_name}: Got api user from auth refresh: {api_user}")
+                                        tok = data_obj.get("access_token")
+                                        if tok:
+                                            access_token = tok
+                                            print(f"✅ {self.account_name}: Got access token from auth refresh")
                             except Exception as e:
                                 print(f"⚠️ {self.account_name}: auth refresh error: {e}")
 
@@ -491,6 +496,8 @@ class GitHubSignIn:
                         user_cookies = filter_cookies(cookies, self.provider_config.origin)
 
                         result = {"cookies": user_cookies, "api_user": api_user}
+                        if access_token:
+                            result["access_token"] = access_token
 
                         # 只有当检测到 Cloudflare 验证页面时，才获取并返回浏览器指纹头部信息
                         browser_headers = None

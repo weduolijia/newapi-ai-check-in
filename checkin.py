@@ -1264,6 +1264,18 @@ class CheckIn:
                     print(f"ℹ️ {self.account_name}: Updating headers with OAuth browser fingerprint")
                     updated_headers.update(oauth_browser_headers)
 
+                # New-API rc.23+ (tabitoken): auth/refresh 返回 access_token，
+                # 用 system access token 路径执行签到（带 Authorization: Bearer）
+                access_token = result_data.get("access_token")
+                if access_token:
+                    print(f"ℹ️ {self.account_name}: Using access token from auth refresh for check-in")
+                    return await self.check_in_with_system_access_token(
+                        access_token=access_token,
+                        bypass_cookies=bypass_cookies,
+                        common_headers=updated_headers,
+                        api_user=api_user,
+                    )
+
                 merged_cookies = {**bypass_cookies, **user_cookies}
                 return await self.check_in_with_cookies(merged_cookies, updated_headers, api_user, impersonate)
             elif success and "code" in result_data and "state" in result_data:
