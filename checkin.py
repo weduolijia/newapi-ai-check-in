@@ -1750,8 +1750,14 @@ class CheckIn:
 
         return False
 
-    async def _read_site_api_user_from_browser(self, page, cookies: dict, common_headers: dict) -> str | int | None:
-        """从浏览器 localStorage 或 /api/user/self 获取用户 ID。"""
+    async def _read_site_api_user_from_browser(self, page, cookies: dict, common_headers: dict) -> tuple[str | int | None, str | None]:
+        """从浏览器 localStorage 或 /api/user/self 获取用户 ID。
+
+        Returns:
+            (api_user, access_token): access_token 为 None 表示走 cookie 路径
+        """
+        access_token = None
+        api_user = None
         try:
             user_data = await page.evaluate("() => localStorage.getItem('user')")
             if user_data:
@@ -1759,7 +1765,7 @@ class CheckIn:
                 api_user = user_obj.get("id")
                 if api_user is not None:
                     print(f"✅ {self.account_name}: Got api user from localStorage: {api_user}")
-                    return api_user
+                    return api_user, access_token
         except Exception as e:
             print(f"⚠️ {self.account_name}: Error reading user from localStorage: {e}")
 
@@ -1775,23 +1781,45 @@ class CheckIn:
             headers["Referer"] = self.provider_config.origin
             headers["Origin"] = self.provider_config.origin
 
-            response = session.get(self.provider_config.get_user_info_url(), headers=headers, timeout=30)
-            if response.status_code == 200:
-                json_data = response_resolve(response, "site_user_self", self.account_name)
-                if json_data and json_data.get("success"):
-                    user_data = json_data.get("data", {})
-                    api_user = user_data.get("id")
-                    if api_user is not None:
-                        print(f"✅ {self.account_name}: Got api user from user-info API: {api_user}")
-                        return api_user
-            print(f"⚠️ {self.account_name}: Unable to get api user from user-info API, HTTP {response.status_code}")
+            # New-API rc.23+: 优先 POST /api/user/auth/refresh 获取 auth bundle
+            # (含 user.id 和 access_token)，再回退 GET /api/user/self
+            try:
+                resp = session.post(
+                    f"{self.provider_config.origin}/api/user/auth/refresh",
+                    headers=headers,
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    jb = resp.json()
+                    data_obj = jb.get("data", {}) if isinstance(jb, dict) else {}
+                    if isinstance(data_obj, dict):
+                        user_obj = data_obj.get("user", {})
+                        if isinstance(user_obj, dict) and user_obj.get("id"):
+                            api_user = user_obj.get("id")
+                            print(f"✅ {self.account_name}: Got api user from auth refresh: {api_user}")
+                        tok = data_obj.get("access_token")
+                        if tok:
+                            access_token = tok
+                            print(f"✅ {self.account_name}: Got access token from auth refresh")
+            except Exception as e:
+                print(f"⚠️ {self.account_name}: auth refresh error: {e}")
+
+            if not api_user:
+                response = session.get(self.provider_config.get_user_info_url(), headers=headers, timeout=30)
+                if response.status_code == 200:
+                    json_data = response_resolve(response, "site_user_self", self.account_name)
+                    if json_data and json_data.get("success"):
+                        user_data = json_data.get("data", {})
+                        api_user = user_data.get("id")
+                        if api_user is not None:
+                            print(f"✅ {self.account_name}: Got api user from user-info API: {api_user}")
         except Exception as e:
             print(f"⚠️ {self.account_name}: Error getting api user from user-info API: {e}")
         finally:
             if session:
                 session.close()
 
-        return None
+        return api_user, access_token
 
     async def check_in_with_site_browser(
         self,
@@ -1865,7 +1893,7 @@ class CheckIn:
                 user_cookies = filter_cookies(restore_cookies, self.provider_config.origin)
                 merged_cookies = {**bypass_cookies, **user_cookies}
 
-                api_user = await self._read_site_api_user_from_browser(page, merged_cookies, common_headers)
+                api_user, access_token = await self._read_site_api_user_from_browser(page, merged_cookies, common_headers)
                 if api_user is None:
                     await take_screenshot(page, "site_browser_login_no_user_id", self.account_name)
                     return False, {"error": "Site browser login succeeded but no user ID found"}
@@ -1877,6 +1905,15 @@ class CheckIn:
                     updated_headers.update(browser_headers)
 
                 impersonate = get_curl_cffi_impersonate(updated_headers.get("User-Agent", ""))
+                # New-API rc.23+ (llmhost): auth/refresh 拿到 access_token, 用 Bearer 路径签到
+                if access_token:
+                    print(f"ℹ️ {self.account_name}: Using access token from browser auth refresh for check-in")
+                    return await self.check_in_with_system_access_token(
+                        access_token=access_token,
+                        bypass_cookies=bypass_cookies,
+                        common_headers=updated_headers,
+                        api_user=api_user,
+                    )
                 return await self.check_in_with_cookies(merged_cookies, updated_headers, api_user, impersonate)
 
             except Exception as e:
