@@ -6,6 +6,67 @@ from typing import Literal
 from curl_cffi import requests as curl_requests
 
 
+def check_push_response(name: str, response) -> None:
+	"""校验推送接口的响应，失败时抛出异常
+
+	curl_cffi 不会因 4xx/5xx 抛异常，若不检查返回值，推送失败会被当成成功打印，
+	导致「显示推送成功但实际收不到消息」。部分接口还会用 HTTP 200 + 业务错误码
+	表示失败（Telegram 的 ok、钉钉/企业微信的 errcode、飞书/PushPlus 的 code）。
+	"""
+	if response.status_code >= 400:
+		raise RuntimeError(f'{name} HTTP {response.status_code}: {response.text[:300]}')
+
+	try:
+		payload = response.json()
+	except Exception:
+		# 非 JSON 响应且状态码正常，视为成功
+		return
+
+	if not isinstance(payload, dict):
+		return
+
+	if (
+		payload.get('ok') is False
+		or payload.get('errcode') not in (None, 0)
+		or payload.get('code') not in (None, 0, 200)
+	):
+		raise RuntimeError(f'{name} rejected the message: {response.text[:300]}')
+
+
+def split_text(text: str, limit: int) -> list[str]:
+	"""按行把文本切成不超过 limit 字符的若干段
+
+	用于绕过 Telegram 单条消息 4096 字符的限制。优先在换行处切分以保持可读性；
+	单行本身超长时才硬切。
+	"""
+	if len(text) <= limit:
+		return [text]
+
+	chunks: list[str] = []
+	current = ''
+
+	for line in text.split('\n'):
+		# 单行超过上限，先冲掉已积累的内容，再把这一行硬切
+		while len(line) > limit:
+			if current:
+				chunks.append(current)
+				current = ''
+			chunks.append(line[:limit])
+			line = line[limit:]
+
+		candidate = f'{current}\n{line}' if current else line
+		if len(candidate) > limit:
+			chunks.append(current)
+			current = line
+		else:
+			current = candidate
+
+	if current:
+		chunks.append(current)
+
+	return chunks
+
+
 class NotificationKit:
 	@property
 	def email_user(self) -> str:
@@ -72,21 +133,24 @@ class NotificationKit:
 			raise ValueError('PushPlus Token not configured')
 
 		data = {'token': self.pushplus_token, 'title': title, 'content': content, 'template': 'html'}
-		curl_requests.post('http://www.pushplus.plus/send', json=data, timeout=30)
+		check_push_response('PushPlus', curl_requests.post('http://www.pushplus.plus/send', json=data, timeout=30))
 
 	def send_serverPush(self, title: str, content: str):
 		if not self.server_push_key:
 			raise ValueError('Server Push key not configured')
 
 		data = {'title': title, 'desp': content}
-		curl_requests.post(f'https://sctapi.ftqq.com/{self.server_push_key}.send', json=data, timeout=30)
+		check_push_response(
+			'Server Push',
+			curl_requests.post(f'https://sctapi.ftqq.com/{self.server_push_key}.send', json=data, timeout=30),
+		)
 
 	def send_dingtalk(self, title: str, content: str):
 		if not self.dingding_webhook:
 			raise ValueError('DingTalk Webhook not configured')
 
 		data = {'msgtype': 'text', 'text': {'content': f'{title}\n{content}'}}
-		curl_requests.post(self.dingding_webhook, json=data, timeout=30)
+		check_push_response('DingTalk', curl_requests.post(self.dingding_webhook, json=data, timeout=30))
 
 	def send_feishu(self, title: str, content: str):
 		if not self.feishu_webhook:
@@ -99,22 +163,30 @@ class NotificationKit:
 				'header': {'template': 'blue', 'title': {'content': title, 'tag': 'plain_text'}},
 			},
 		}
-		curl_requests.post(self.feishu_webhook, json=data, timeout=30)
+		check_push_response('Feishu', curl_requests.post(self.feishu_webhook, json=data, timeout=30))
 
 	def send_wecom(self, title: str, content: str):
 		if not self.weixin_webhook:
 			raise ValueError('WeChat Work Webhook not configured')
 
 		data = {'msgtype': 'text', 'text': {'content': f'{title}\n{content}'}}
-		curl_requests.post(self.weixin_webhook, json=data, timeout=30)
+		check_push_response('WeChat Work', curl_requests.post(self.weixin_webhook, json=data, timeout=30))
 
 	def send_telegram(self, title: str, content: str):
 		if not self.telegram_bot_token or not self.telegram_chat_id:
 			raise ValueError('Telegram Bot Token or Chat ID not configured')
 
-		text = f'*{title}*\n{content}'
-		data = {'chat_id': self.telegram_chat_id, 'text': text, 'parse_mode': 'Markdown'}
-		curl_requests.post(f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage', json=data, timeout=30)
+		# 不使用 parse_mode：通知内容是纯文本，其中的 _ * ` [ 等字符（例如账号名
+		# beizhi_sylu_cc_1、脱敏用户名 w****a）会让 Telegram 的 Markdown 解析器
+		# 报 "can't parse entities" 并整条丢弃消息。
+		text = f'{title}\n{content}'
+		# Telegram 单条消息上限 4096 字符，超出会被整条拒绝，账号多时需要分段发送
+		for chunk in split_text(text, 4000):
+			data = {'chat_id': self.telegram_chat_id, 'text': chunk}
+			response = curl_requests.post(
+				f'https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage', json=data, timeout=30
+			)
+			check_push_response('Telegram', response)
 
 	def push_message(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text'):
 		notifications = [
