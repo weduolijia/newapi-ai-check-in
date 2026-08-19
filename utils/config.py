@@ -5,16 +5,16 @@
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Generator, AsyncGenerator, List, Literal
+from typing import AsyncGenerator, Callable, Dict, Generator, List, Literal
 
-from utils.get_check_in_status import newapi_check_in_status
 from utils.get_cdk import (
     get_runawaytime_cdk,
     get_x666_cdk,
     # get_b4u_cdk,
 )
-
+from utils.get_check_in_status import newapi_check_in_status
 
 # 前向声明 AccountConfig 类型，用于类型注解
 # 实际的 AccountConfig 类在后面定义
@@ -378,6 +378,7 @@ class AppConfig:
         linux_do_accounts_env: str = "ACCOUNTS_LINUX_DO",
         github_accounts_env: str = "ACCOUNTS_GITHUB",
         proxy_env: str = "PROXY",
+        disabled_env: str = "DISABLED_PROVIDERS",
     ) -> "AppConfig":
         """从环境变量加载配置
 
@@ -387,6 +388,7 @@ class AppConfig:
             linux_do_accounts_env: Linux.do 账号配置的环境变量名称，默认为 "ACCOUNTS_LINUX_DO"
             github_accounts_env: GitHub 账号配置的环境变量名称，默认为 "ACCOUNTS_GITHUB"
             proxy_env: 全局代理配置的环境变量名称，默认为 "PROXY"
+            disabled_env: 禁用站点/账号列表的环境变量名称，默认为 "DISABLED_PROVIDERS"
         """
         # 加载 providers 配置
         providers = cls._load_providers(providers_env)
@@ -401,6 +403,9 @@ class AppConfig:
         # 自动为自定义 provider 添加账号（如果 accounts 中没有对应的 provider）
         accounts = cls._auto_add_accounts_for_custom_providers(providers, accounts, linux_do_accounts, github_accounts)
 
+        # 过滤掉被禁用的站点/账号（必须放在自动添加之后，否则会被重新加回来）
+        accounts = cls._filter_disabled_accounts(accounts, disabled_env)
+
         # 加载全局代理配置
         global_proxy = cls._load_proxy(proxy_env)
 
@@ -411,6 +416,61 @@ class AppConfig:
             github_accounts=github_accounts,
             global_proxy=global_proxy,
         )
+
+    @classmethod
+    def _filter_disabled_accounts(
+        cls,
+        accounts: List["AccountConfig"],
+        disabled_env: str = "DISABLED_PROVIDERS",
+    ) -> List["AccountConfig"]:
+        """按 provider 名或账号名过滤掉被禁用的账号
+
+        用于临时停掉某个站点（例如站点下线、域名停放），无需修改 ACCOUNTS /
+        PROVIDERS 这些 secret。环境变量为逗号分隔，大小写不敏感，例如：
+
+            DISABLED_PROVIDERS=tabitoken,gorouter
+
+        Args:
+            accounts: 账号列表
+            disabled_env: 禁用列表的环境变量名称
+
+        Returns:
+            过滤后的账号列表
+        """
+        raw = os.getenv(disabled_env, "")
+        # 只按逗号/换行分隔：默认账号显示名形如 "gorouter 1" 本身含空格，
+        # 若按空格切分会把它拆成两项并产生莫名的未匹配告警
+        disabled = {item.strip().lower() for item in re.split(r"[,\n]+", raw) if item.strip()}
+        if not disabled:
+            return accounts
+
+        kept: List["AccountConfig"] = []
+        skipped: List[str] = []
+        matched: set[str] = set()
+
+        for i, account in enumerate(accounts):
+            display_name = account.get_display_name(i)
+            # provider 名和账号名都可以用来禁用
+            keys = {account.provider.lower(), display_name.lower()}
+            hit = keys & disabled
+
+            if hit:
+                matched |= hit
+                skipped.append(display_name)
+            else:
+                kept.append(account)
+
+        if skipped:
+            print(f"🚫 Disabled by {disabled_env}, skipping {len(skipped)} account(s): {', '.join(skipped)}")
+
+        unknown = disabled - matched
+        if unknown:
+            print(f"⚠️ {disabled_env} contains name(s) that matched no account: {', '.join(sorted(unknown))}")
+
+        if not kept:
+            print(f"⚠️ {disabled_env} disabled every account, nothing left to check in")
+
+        return kept
 
     @classmethod
     def _auto_add_accounts_for_custom_providers(

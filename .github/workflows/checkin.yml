@@ -18,6 +18,11 @@ on:
         description: '调试模式 (启用后会保存截图和 HTML 日志)'
         required: false
         type: boolean
+      disabled_providers:
+        description: '本次跳过的站点/账号 (逗号分隔，可选，不填则使用 vars.DISABLED_PROVIDERS)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   checkin:
@@ -110,6 +115,7 @@ jobs:
         ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
         ACCOUNTS_GITHUB: ${{ secrets.ACCOUNTS_GITHUB }}
         PROVIDERS: ${{ inputs.providers || secrets.PROVIDERS }}
+        DISABLED_PROVIDERS: ${{ inputs.disabled_providers || vars.DISABLED_PROVIDERS }}
         PROXY: ${{secrets.PROXY}}
         STORATE_STATES_GITHUB: ${{ secrets.STORATE_STATES_GITHUB }}
         STORATE_STATES_LINUXDO: ${{ secrets.STORATE_STATES_LINUXDO }}
