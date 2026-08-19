@@ -4,22 +4,36 @@ CheckIn 类
 """
 
 import asyncio
-import json
-import inspect
 import hashlib
+import inspect
+import json
 import os
 import tempfile
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlencode, urlparse
 
-from curl_cffi import requests as curl_requests
 from camoufox.async_api import AsyncCamoufox
+from curl_cffi import requests as curl_requests
+
+from utils.browser_utils import (
+    aliyun_captcha_check,
+    filter_cookies,
+    get_random_user_agent,
+    parse_cookies,
+    take_screenshot,
+)
 from utils.config import AccountConfig, ProviderConfig
-from utils.browser_utils import parse_cookies, filter_cookies, get_random_user_agent, take_screenshot, aliyun_captcha_check
 from utils.get_cf_clearance import get_cf_clearance
-from utils.http_utils import proxy_resolve, response_resolve
-from utils.topup import topup
 from utils.get_headers import get_browser_headers, get_curl_cffi_impersonate, print_browser_headers
+from utils.get_turnstile_token import (
+    append_turnstile_token,
+    get_turnstile_site_key,
+    get_turnstile_token,
+    is_turnstile_error,
+)
+from utils.http_utils import proxy_resolve, response_resolve
 from utils.mask_utils import mask_username
+from utils.topup import topup
+
 
 class CheckIn:
     """newapi.ai 签到管理类"""
@@ -751,14 +765,16 @@ class CheckIn:
                 "error": f"Failed to get user info, {e}",
             }
 
-    def execute_check_in(
+    async def execute_check_in(
         self,
         session: curl_requests.Session,
         headers: dict,
         api_user: str | int,
     ) -> dict:
         """执行签到请求
-        
+
+        若站点在签到接口启用了 Cloudflare Turnstile 校验，会自动获取 token 后重试一次。
+
         Returns:
             包含 success, message, data 等信息的字典
         """
@@ -772,6 +788,27 @@ class CheckIn:
             print(f"❌ {self.account_name}: No check-in URL configured")
             return {"success": False, "error": "No check-in URL configured"}
 
+        result = self.request_check_in(session, checkin_headers, check_in_url)
+
+        # 部分站点在签到接口上启用了 Turnstile 校验，需要携带 token 重试
+        if not result.get("success") and is_turnstile_error(result.get("error")):
+            turnstile_result = await self.retry_check_in_with_turnstile(session, checkin_headers, check_in_url)
+            if turnstile_result is not None:
+                return turnstile_result
+
+        return result
+
+    def request_check_in(
+        self,
+        session: curl_requests.Session,
+        checkin_headers: dict,
+        check_in_url: str,
+    ) -> dict:
+        """发起签到请求并解析响应
+
+        Returns:
+            包含 success, message, data 等信息的字典
+        """
         response = session.post(check_in_url, headers=checkin_headers, timeout=30)
 
         print(f"📨 {self.account_name}: Response status code {response.status_code}")
@@ -802,13 +839,13 @@ class CheckIn:
                 check_in_data = json_data.get("data", {})
                 checkin_date = check_in_data.get("checkin_date", "")
                 quota_awarded = check_in_data.get("quota_awarded", 0)
-                
+
                 if quota_awarded:
                     quota_display = round(quota_awarded / 500000, 2)
                     print(f"✅ {self.account_name}: Check-in successful! Date: {checkin_date}, Quota awarded: ${quota_display}")
                 else:
                     print(f"✅ {self.account_name}: Check-in successful! {message}")
-                
+
                 return {
                     "success": True,
                     "message": message or "Check-in successful",
@@ -821,6 +858,44 @@ class CheckIn:
         else:
             print(f"❌ {self.account_name}: Check-in failed - HTTP {response.status_code}")
             return {"success": False, "error": f"HTTP {response.status_code}"}
+
+    async def retry_check_in_with_turnstile(
+        self,
+        session: curl_requests.Session,
+        checkin_headers: dict,
+        check_in_url: str,
+    ) -> dict | None:
+        """获取 Turnstile token 后重试签到
+
+        Returns:
+            dict | None: 重试后的签到结果；无法获取 token 时返回 None（保留原始错误）
+        """
+        print(f"ℹ️ {self.account_name}: Check-in requires Turnstile verification")
+
+        site_key = get_turnstile_site_key(
+            session=session,
+            origin=self.provider_config.origin,
+            account_name=self.account_name,
+            headers=checkin_headers,
+            status_path=self.provider_config.status_path,
+        )
+        if not site_key:
+            print(f"❌ {self.account_name}: Cannot retry check-in without Turnstile sitekey")
+            return None
+
+        # 浏览器与签到请求必须使用同一代理，否则出口 IP 不一致会导致服务端校验失败
+        token = await get_turnstile_token(
+            url=self.provider_config.get_login_url(),
+            site_key=site_key,
+            account_name=self.account_name,
+            proxy_config=self.camoufox_proxy_config,
+        )
+        if not token:
+            print(f"❌ {self.account_name}: Cannot retry check-in without Turnstile token")
+            return None
+
+        print(f"🌐 {self.account_name}: Retrying check-in with Turnstile token")
+        return self.request_check_in(session, checkin_headers, append_turnstile_token(check_in_url, token))
 
     async def execute_topup(
         self,
@@ -1013,7 +1088,7 @@ class CheckIn:
                         print(f"ℹ️ {self.account_name}: Already checked in today, skipping check-in")
                     else:
                         # 未签到，执行签到
-                        check_in_result = self.execute_check_in(session, headers, api_user)
+                        check_in_result = await self.execute_check_in(session, headers, api_user)
                         if not check_in_result.get("success"):
                             return False, {"error": check_in_result.get("error", "Check-in failed")}
                         # 签到成功后再次查询状态（显示最新状态）
@@ -1025,7 +1100,7 @@ class CheckIn:
                         )
                 else:
                     # 没有配置签到状态查询函数，直接执行签到
-                    check_in_result = self.execute_check_in(session, headers, api_user)
+                    check_in_result = await self.execute_check_in(session, headers, api_user)
                     if not check_in_result.get("success"):
                         return False, {"error": check_in_result.get("error", "Check-in failed")}
             else:
@@ -1117,7 +1192,7 @@ class CheckIn:
                         print(f"ℹ️ {self.account_name}: Already checked in today, skipping check-in")
                     else:
                         # 未签到，执行签到
-                        check_in_result = self.execute_check_in(session, headers, api_user)
+                        check_in_result = await self.execute_check_in(session, headers, api_user)
                         if not check_in_result.get("success"):
                             return False, {"error": check_in_result.get("error", "Check-in failed")}
                         # 签到成功后再次查询状态（显示最新状态）
@@ -1129,7 +1204,7 @@ class CheckIn:
                         )
                 else:
                     # 没有配置签到状态查询函数，直接执行签到
-                    check_in_result = self.execute_check_in(session, headers, api_user)
+                    check_in_result = await self.execute_check_in(session, headers, api_user)
                     if not check_in_result.get("success"):
                         return False, {"error": check_in_result.get("error", "Check-in failed")}
             else:
