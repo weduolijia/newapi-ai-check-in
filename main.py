@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
@@ -34,6 +35,42 @@ def generate_balance_hash(balances: dict) -> str:
     return hashlib.sha256(balance_json.encode("utf-8")).hexdigest()[:16]
 
 
+def _describe_account(account_name: str, ok_methods: list, bad_methods: list) -> str:
+    """把单个账号的签到结果写成一句自然、口语的话。
+
+    ok_methods:  [(auth_method, display_str)] 成功的登录方式及其余额描述
+    bad_methods: [(auth_method, error_msg)]   失败的登录方式及原因
+    display_str 形如 "Current balance: $181.11, Used: $2.0, Bonus: $0.0"
+    """
+
+    def _balance_phrase(display: str) -> str:
+        # 从英文 display 里抠出余额数字，拼成中文；抠不出就原样带上
+        m = re.search(r"balance:\s*\$?([\d.]+)", display, re.IGNORECASE)
+        if m:
+            return f"当前余额 ${m.group(1)}"
+        return display.strip()
+
+    # 全部成功
+    if ok_methods and not bad_methods:
+        bal = _balance_phrase(ok_methods[0][1]) if ok_methods[0][1] else ""
+        tail = f"，{bal}。" if bal else "。"
+        return f"「{account_name}」签到成功{tail}"
+
+    # 全部失败
+    if bad_methods and not ok_methods:
+        reason = bad_methods[0][1]
+        return f"「{account_name}」签到失败，原因：{reason}"
+
+    # 部分成功部分失败
+    bal = _balance_phrase(ok_methods[0][1]) if ok_methods and ok_methods[0][1] else ""
+    bal_tail = f"（{bal}）" if bal else ""
+    reasons = "；".join(err for _, err in bad_methods)
+    return (
+        f"「{account_name}」签到成功了{bal_tail}，"
+        f"不过有登录方式没通过：{reasons}"
+    )
+
+
 async def main():
     """运行签到流程
 
@@ -60,6 +97,8 @@ async def main():
     # 为每个账号执行签到
     success_count = 0
     total_count = 0
+    accounts_total = 0
+    accounts_ok = 0
     notification_content = []
     current_balances = {}
     need_notify = False  # 是否需要发送通知
@@ -67,8 +106,7 @@ async def main():
     for i, account_config in enumerate(app_config.accounts):
         account_key = f"account_{i + 1}"
         account_name = account_config.get_display_name(i)
-        if len(notification_content) > 0:
-            notification_content.append("\n-------------------------------")
+        accounts_total += 1
 
         try:
             provider_config = app_config.get_provider(account_config.provider)
@@ -92,17 +130,15 @@ async def main():
             failed_methods = []
 
             this_account_balances = {}
-            # 构建详细的结果报告
-            account_result = f"📣 {account_name} Summary:\n"
+            # 构建自然语言结果描述
+            ok_methods = []      # [(auth_method, display)]
+            bad_methods = []     # [(auth_method, error_msg)]
             for auth_method, success, user_info in results:
-                status = "✅ SUCCESS" if success else "❌ FAILED"
-                account_result += f"  {status} with {auth_method} authentication\n"
-
                 if success and user_info and user_info.get("success"):
                     account_success = True
                     success_count += 1
                     successful_methods.append(auth_method)
-                    account_result += f"    💰 {user_info['display']}\n"
+                    ok_methods.append((auth_method, user_info.get("display", "")))
                     # 记录余额信息
                     current_quota = user_info["quota"]
                     current_used = user_info["used_quota"]
@@ -115,10 +151,11 @@ async def main():
                 else:
                     failed_methods.append(auth_method)
                     error_msg = user_info.get("error", "Unknown error") if user_info else "Unknown error"
-                    account_result += f"    🔺 {str(error_msg)}\n"
+                    bad_methods.append((auth_method, str(error_msg)))
 
             if account_success:
                 current_balances[account_key] = this_account_balances
+                accounts_ok += 1
 
             # 如果所有认证方式都失败，需要通知
             if not account_success and results:
@@ -130,20 +167,17 @@ async def main():
                 need_notify = True
                 print(f"🔔 {account_name} has some failed authentication methods, will send notification")
 
-            # 添加统计信息
-            success_count_methods = len(successful_methods)
-            failed_count_methods = len(failed_methods)
-
-            account_result += f"\n📊 Statistics: {success_count_methods}/{len(results)} methods successful"
-            if failed_count_methods > 0:
-                account_result += f" ({failed_count_methods} failed)"
-
-            notification_content.append(account_result)
+            # 组装这个账号的自然语言描述
+            notification_content.append(
+                _describe_account(account_name, ok_methods, bad_methods)
+            )
 
         except Exception as e:
             print(f"❌ {account_name} processing exception: {e}")
             need_notify = True  # 异常也需要通知
-            notification_content.append(f"❌ {account_name} Exception: {str(e)[:100]}...")
+            notification_content.append(
+                f"「{account_name}」这次没能签到，运行时报了个错：{str(e)[:100]}"
+            )
 
     # 检查余额变化
     current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
@@ -165,27 +199,21 @@ async def main():
         save_balance_hash(BALANCE_HASH_FILE, current_balance_hash)
 
     if need_notify and notification_content:
-        # 构建通知内容
-        summary = [
-            "-------------------------------",
-            "📢 Check-in result statistics:",
-            f"🔵 Success: {success_count}/{total_count}",
-            f"🔴 Failed: {total_count - success_count}/{total_count}",
-        ]
+        # 构建自然语言通知
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-        if success_count == total_count:
-            summary.append("✅ All accounts check-in successful!")
-        elif success_count > 0:
-            summary.append("⚠️ Some accounts check-in successful")
+        if accounts_ok == accounts_total:
+            headline = f"✅ 今日签到全部完成，{accounts_total} 个站点都搞定了。"
+        elif accounts_ok > 0:
+            headline = f"⚠️ 今日签到部分完成：{accounts_total} 个站点里成了 {accounts_ok} 个，还有 {accounts_total - accounts_ok} 个没签上。"
         else:
-            summary.append("❌ All accounts check-in failed")
+            headline = f"❌ 今日签到全军覆没，{accounts_total} 个站点一个都没签上。"
 
-        time_info = f'🕓 Execution time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'
-
-        notify_content = "\n\n".join([time_info, "\n".join(notification_content), "\n".join(summary)])
+        body = "\n\n".join(notification_content)
+        notify_content = f"{headline}\n\n{body}\n\n（跑于 {now_str}）"
 
         print(notify_content)
-        notify.push_message("Check-in Alert", notify_content, msg_type="text")
+        notify.push_message("每日签到", notify_content, msg_type="text")
         print("🔔 Notification sent due to failures or balance changes")
     else:
         print("ℹ️ All accounts successful and no balance changes detected, notification skipped")
