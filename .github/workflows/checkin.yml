@@ -115,9 +115,12 @@ jobs:
         ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
         ACCOUNTS_GITHUB: ${{ secrets.ACCOUNTS_GITHUB }}
         PROVIDERS: ${{ inputs.providers || secrets.PROVIDERS }}
-        # tabitoken.com 域名已停放、站点下线，默认跳过；站点恢复后把下面的 'tabitoken' 删掉即可，
+        # 默认跳过的站点：
+        #   - tabitoken：域名已停放、站点下线
+        #   - gorouter：GitHub OAuth 登录卡在 Cloudflare Turnstile（无法自动解码），已停用
+        # 站点恢复/修好后把对应名字从下面删掉即可；
         # 也可以用仓库变量 vars.DISABLED_PROVIDERS 覆盖（想全部启用就把变量设为 none）
-        DISABLED_PROVIDERS: ${{ inputs.disabled_providers || vars.DISABLED_PROVIDERS || 'tabitoken' }}
+        DISABLED_PROVIDERS: ${{ inputs.disabled_providers || vars.DISABLED_PROVIDERS || 'tabitoken,gorouter' }}
         PROXY: ${{secrets.PROXY}}
         STORATE_STATES_GITHUB: ${{ secrets.STORATE_STATES_GITHUB }}
         STORATE_STATES_LINUXDO: ${{ secrets.STORATE_STATES_LINUXDO }}
