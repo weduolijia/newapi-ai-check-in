@@ -1,7 +1,7 @@
 name: newapi.ai 自动签到
 on:
   schedule:
-    - cron: '0 23 * * *'  # 北京时间每天早上 7:00 (UTC 23:00)
+    - cron: '30 22 * * *'  # 北京时间 06:30 (UTC 22:30) + 工作流内随机延迟 0~30 分钟，避开 GitHub 调度高峰
   workflow_dispatch:
     inputs:
       accounts:
@@ -108,6 +108,14 @@ jobs:
         restore-keys: |
           balance-hash-
             
+    - name: 随机延迟（避开调度高峰，仅定时运行生效）
+      if: github.event_name == 'schedule'
+      run: |
+        $wait = Get-Random -Minimum 0 -Maximum 1800
+        echo "⏳ 随机延迟 $wait 秒 (0~30 分钟) 后开始签到..."
+        Start-Sleep -Seconds $wait
+        echo "✅ 延迟结束，时间: $(Get-Date)"
+
     - name: 执行签到
       env:
         ACCOUNTS: ${{ inputs.accounts || secrets.ACCOUNTS }}
