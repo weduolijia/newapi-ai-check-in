@@ -130,6 +130,7 @@ jobs:
         # 也可以用仓库变量 vars.DISABLED_PROVIDERS 覆盖（想全部启用就把变量设为 none）
         DISABLED_PROVIDERS: ${{ inputs.disabled_providers || vars.DISABLED_PROVIDERS || 'tabitoken,gorouter' }}
         PROXY: ${{secrets.PROXY}}
+        BEIZHI_ORIGIN: ${{ vars.BEIZHI_ORIGIN }}
         STORATE_STATES_GITHUB: ${{ secrets.STORATE_STATES_GITHUB }}
         STORATE_STATES_LINUXDO: ${{ secrets.STORATE_STATES_LINUXDO }}
         DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
@@ -153,7 +154,12 @@ jobs:
           $env:ACCOUNTS = $merged | ConvertTo-Json -Depth 10 -Compress
           Write-Host "🔀 Merged $($accounts.Count) + $($extra.Count) accounts"
         }
-        # 列出 storage-states 目录文件
+        # 站点换域名: beizhi.sylu.cc 已下线, 用仓库变量 vars.BEIZHI_ORIGIN 覆盖 origin (默认 http://beizhi.dedyn.io)
+        $beizhiOrigin = if ($env:BEIZHI_ORIGIN) { $env:BEIZHI_ORIGIN } else { 'http://beizhi.dedyn.io' }
+        if ($env:PROVIDERS) { $env:PROVIDERS = $env:PROVIDERS -replace 'https?://beizhi\.sylu\.cc', $beizhiOrigin }
+        if ($env:ACCOUNTS)  { $env:ACCOUNTS  = $env:ACCOUNTS  -replace 'https?://beizhi\.sylu\.cc', $beizhiOrigin }
+        Write-Host "🔀 beizhi_sylu_cc origin 覆盖为 $beizhiOrigin"
+        # 列出 storage-states 目录内容
         if (Test-Path "storage-states") {
           echo "📁 storage-states 目录内容:"
           echo "绝对路径: $(Resolve-Path storage-states)"
