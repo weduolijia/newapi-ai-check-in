@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -209,8 +210,17 @@ async def main():
         else:
             headline = f"❌ 今日签到全军覆没，{accounts_total} 个站点一个都没签上。"
 
+        # 把被禁用/跳过的站点也顺带说清楚，免得看的人以为漏签了
+        disabled_raw = os.getenv("DISABLED_PROVIDERS", "")
+        disabled_names = [n.strip() for n in re.split(r"[,\n]+", disabled_raw) if n.strip()]
+        skipped_line = f"🚫 这些站点是手动停用的，这次没跑：{'、'.join(disabled_names)}。" if disabled_names else ""
+
         body = "\n\n".join(notification_content)
-        notify_content = f"{headline}\n\n{body}\n\n（跑于 {now_str}）"
+        parts = [headline, body]
+        if skipped_line:
+            parts.append(skipped_line)
+        parts.append(f"（跑于 {now_str}）")
+        notify_content = "\n\n".join(parts)
 
         print(notify_content)
         notify.push_message("每日签到", notify_content, msg_type="text")
